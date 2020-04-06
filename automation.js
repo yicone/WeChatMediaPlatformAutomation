@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
-const puppeteer = require('puppeteer');
+const puppeteerPkgId = process.env.PUPPETEER_DEBUG ? 'puppeteer-debug':'puppeteer';
+const puppeteer = require(puppeteerPkgId);
+const select = require('puppeteer-select');
 const open = require('open')
 const clipboardy = require('clipboardy');
 const LocalDate = require('js-localdate-plus');
@@ -94,52 +96,122 @@ const url = "https://mp.weixin.qq.com/"
 
 function autoLogin() {
     return new Promise(async (resolve, reject) => {
-        const browserConfig = process.env.SHOW_BROWSER ? {
+        const browserConfig = process.env.PUPPETEER_DEBUG ? {
+            args: ['--no-sandbox'],
             headless: false,
-            slowMo: 100
-        } : {}
+            // devtools: true,
+            slowMo: 200,
+        } : {};
         browserConfig['defaultViewport'] = null; // 页面最大化
-        const browser = await puppeteer.launch(browserConfig);
-        let page = await browser.newPage();
-        await page.setViewport({
-            width: 1200,
-            height: 890,
-        });
+
+        let browser = null;
+        let page = null;
+
+        try {
+            browser = await puppeteer.launch(browserConfig);
+            // browser = await puppeteer.connect({
+            //     browserWSEndpoint: `ws://localhost:3000?pause`
+            // });
+            page = await browser.newPage();
+            
+            /* 记录当前页面上发出的请求（新开的页面无法记录）
+            // https://github.com/puppeteer/puppeteer/issues/2163
+
+            const urls = [url];
+
+            const client = await page.target().createCDPSession();
+            await client.send('Network.enable');
+            await client.on('Network.requestWillBeSent', (e) => {
+                if (e.type !== "Document") {
+                    return;
+                }
+        
+                console.log("EVENT INFO: ");
+                console.log(e.type);
+                console.log(e.documentURL);
+                // console.log("INITIATOR: " + JSON.stringify(e.initiator, null, 4));
+        
+                // check if url redirected
+                if (typeof e.redirectResponse != "undefined") {
+                    // get redirect info
+                    console.log("REDIRECT STATUS CODE: ");
+                    console.log(e.redirectResponse.status);
+        
+                    console.log("REDIRECT REQUEST URL: ");
+                    console.log(e.request.url);
+                    urls.push(e.redirectResponse.status, e.request.url);
+                } else {
+                    // url did not redirect
+                    if (e.request.url !== urls[urls.length - 1]) {
+                        console.log("NO REDIRECT REQUEST URL: ");
+                        console.log(e.request.url);
+                        urls.push(e.request.url);
+                    }
+                }
+            });*/
+
+            await page.setViewport({
+                width: 1200,
+                height: 890,
+            });
+        } catch (e) {
+            // 结束
+            if(browser && browser.isConnected)
+                browser.disconnect();
+            return reject(e);
+        }
 
         try {
             let clickAndWaitForTarget = async (clickSelector, page, browser) => {
                 const pageTarget = page.target(); //save this to know that this was the opener
                 await page.click(clickSelector); //click on a link
+                console.log(clickSelector, 'clicked')
                 const newTarget = await browser.waitForTarget(target => target.opener() === pageTarget); //check that you opened this page, rather than just checking the url
+                console.log('waitForTarget done')
                 const newPage = await newTarget.page(); //get the page object
                 // await newPage.once("load",()=>{}); //this doesn't work; wait till page is loaded
                 await newPage.waitForSelector("body"); //wait for page to be loaded
+                console.log('waitFor body done')
 
                 return newPage;
             };
 
             // 打开首页
             console.log("正在打开登录首页...");
-            await page.goto(url);
+            await page.goto(url, {
+                // 延长超时时间，给browserless页面中点击继续留够时间
+                timeout: 60000
+            });
 
             // 登录
             console.log("正在登录...");
-            await page.waitForSelector('#header > div.banner > div > div > form > div.login_btn_panel > a');
+            await page.waitForSelector('#header > div.banner form.login_form > div.login_btn_panel > a');
             //type the name
-            await page.focus('#header > div.banner > div > div > form > div.login_input_panel > div:nth-child(1) > div > span > input')
+            await page.focus('#header > div.banner form.login_form > div.login_input_panel > div:nth-child(1) > div > span > input')
             await page.keyboard.type(username);
             //type the pwd
-            await page.focus('#header > div.banner > div > div > form > div.login_input_panel > div:nth-child(2) > div > span > input')
+            await page.focus('#header > div.banner form.login_form > div.login_input_panel > div:nth-child(2) > div > span > input')
             await page.keyboard.type(password);
             await page.waitFor(50);
             //Click on the submit button
-            await page.click('#header > div.banner > div > div > form > div.login_btn_panel > a')
+            await page.click('#header > div.banner form.login_form > div.login_btn_panel > a')
 
             // 扫码登录
             console.log("扫码登录中...");
-            const IMAGE_SELECTOR = '#app > div.weui-desktop-layout__main__bd > div > div.js_scan.weui-desktop-qrcheck > div.weui-desktop-qrcheck__qrcode-area > div > img'
+            /* const IMAGE_SELECTOR = '#app > div.weui-desktop-layout__main__bd > div > div.js_scan.weui-desktop-qrcheck > div.weui-desktop-qrcheck__qrcode-area > div > img' */
+            
+                        // <img src="/cgi-bin/loginqrcode?action=getqrcode&amp;param=4300&amp;rd=485" class="weui-desktop-qrcheck__img js_qrcode">
+            const IMAGE_SELECTOR = 'img.js_qrcode';
             await page.waitForSelector(IMAGE_SELECTOR);
-            await page.waitFor(500);
+            console.log("二维码已加载");
+            await page.waitFor(5000);
+
+            /*
+            // 打印所有请求的页面Url（包含跳转）
+            console.log("Final urls array: ");
+            console.log(urls);
+            */
+
             await page.screenshot({
                 path: 'screenshot.png',
                 clip: {
@@ -151,8 +223,9 @@ function autoLogin() {
             });
             open('screenshot.png');
 
+            await page.waitFor(500);
+
             // 新建群发
-            console.log("新建群发文章中...");
             const NEW_POST_WITH_DRAFT = '#app > div.main_bd > div:nth-child(3) > div.weui-desktop-panel__hd.weui-desktop-global-mod > div.weui-desktop-global__extra > a'
             const NEW_POST = '#app > div.main_bd > div:nth-child(3) > div > div > a'
             const NEW_POST_CLASS_NAME = 'weui-desktop-btn weui-desktop-btn_primary'
@@ -175,12 +248,15 @@ function autoLogin() {
                 REAL_SELECTOR = NEW_POST_WITH_DRAFT;
             }
             await page.waitFor(500);
+            console.log("点击新建群发文章");
             page = await clickAndWaitForTarget(REAL_SELECTOR, page, browser);
+            console.log("等待新建群发文章页面打开...");
             await page.setViewport({
                 width: 1200,
                 height: 890,
             });
             await page.waitForSelector("body");
+            console.log("新建群发文章页面打开完成");
             await page.waitFor(5000);
 
             // 删除扫码登录截图
@@ -201,6 +277,7 @@ function autoLogin() {
                     el.dispatchEvent(ev);
                 }
             });
+            console.log("点击自建图文");
             await page.evaluate(() => {
                 const click = window.click;
                 click(600, 470);
@@ -215,6 +292,7 @@ function autoLogin() {
                 height: 890,
             });
             await page.waitForSelector("body");
+            console.log("自建图文页面打开完成");
             await page.waitFor(5000);
 
             // 文章标题
@@ -237,8 +315,45 @@ function autoLogin() {
             await page.keyboard.press('Tab', {
                 delay: 100
             });
+            
+            // ！原代码中采用模拟键盘渐入的方式，会丢失排版格式和图片
+
             let pasted_content = content ? content : (await clipboardy.read());
-            await page.keyboard.type(String(pasted_content));
+            console.log('clipboardy content', pasted_content);
+            
+            // await page.keyboard.type(String(pasted_content));
+
+            const ehEditorFrame = await page.$('iframe#ueditor_0');
+            const frame = await ehEditorFrame.contentFrame();
+            /*
+            await frame.evaluate(content => {
+                // 获取焦点
+                window.focus();
+                // // 方法1: 模拟在浏览器中手工粘贴
+                // document.execCommand('paste');
+                // 方法2
+                // 获取剪贴板内容
+                navigator.clipboard.read().then(items => {
+                    console.log('navigator.clipboard items', items)
+                    var content1 = items[0].getAs("text/html");
+                    console.log('navigator.clipboard content1', content1);
+                    // 粘贴
+                    window.parent.UE.instants['ueditorInstant0'].setContent(content1);
+                }) 
+                // document.execCommand('insertText', false, content)
+            }, pasted_content);
+            */
+           await page.debug()// Into REPL 
+            // 方法3
+            // 获取焦点
+            await frame.focus();    // TODO: 不确定可行
+            // https://stackoverflow.com/questions/57101467/how-do-you-paste-text-using-puppeteer
+            await page.keyboard.down('Control')
+            await page.keyboard.press('V')
+            await page.keyboard.up('Control')
+            await page.screenshot({
+                path: 'content.png',
+            })
             await page.waitFor(100);
 
             console.log("----------文章内容 begin----------");
@@ -251,13 +366,14 @@ function autoLogin() {
             await page.click('#js_imagedialog');
             await page.waitFor(500);
 
+            /* 
             let day = (new LocalDate()).getDay();
             let len = (await page.$$('li.img_item')).length;
             let offset = day % len + 1;
             const left = 'body > div.dialog_wrp.img_dialog_wrp.ui-draggable > div > div.dialog_bd > div > div.img_crop_panel > div.js_select_frame.img_pick_panel.inner_container_box.side_l.cell_layout > div.inner_main > div > div.img_pick_area_inner > div.img_pick > ul > li:nth-child(';
             const right = ')';
             await page.click(left + String(offset) + right);
-
+            // 选中“下一步”
             await page.click('body > div.dialog_wrp.img_dialog_wrp.ui-draggable > div > div.dialog_ft > span.js_crop_next_btn.btn.btn_input.js_btn_p.btn_primary > button');
             await page.waitFor(1200);
             // 选择图片完成
@@ -265,6 +381,28 @@ function autoLogin() {
             await page.waitForSelector(IMG_DONE);
             await page.waitFor(200);
             await page.click(IMG_DONE);
+            */
+
+            const jhCovers = await select(page).getElement('a:contains("Covers")');
+            const ehCovers = jhCovers.asElement();
+            // 选中分组
+            await ehCovers.click();
+            await page.waitFor(200);
+            // 选中分组中的第一张图片
+            await page.waitForSelector('ul.weui-desktop-img-picker__list:nth-child(1)');
+            await page.click('ul.weui-desktop-img-picker__list>li:nth-child(1)');
+            // 选中“下一步”
+            const jhNextStep = await select(page).getElement('button:contains("下一步")');
+            const ehNextStep = jhNextStep.asElement();
+            await ehNextStep.click();
+            await page.waitFor(1200);
+            // 选中“完成“
+            const IMG_DONE = 'button:contains("完成")'
+            await select(page).assertElementPresent(IMG_DONE);
+            const jhCoverSelectingDone = await select(page).getElement(IMG_DONE);
+            const ehCoverSelectingDone = jhCoverSelectingDone.asElement();
+            await page.waitFor(200);
+            await ehCoverSelectingDone.click();
             await page.waitFor(1000);
 
             if (original === true) {
@@ -330,14 +468,21 @@ function autoLogin() {
             return resolve();
         } catch (e) {
             // 异常时截图保存
-            await page.screenshot({
-                path: 'ErrorResult.png',
-            });
-            console.log("发生异常，详情请见 ErrorResult.png");
-            // 结束
-            browser.close();
+            if(browser.isConnected){
+                await page.screenshot({
+                    path: 'ErrorResult.png',
+                });
+                console.log("发生异常，详情请见 ErrorResult.png");
+            }
             return reject(e);
+        } finally {
+            // 结束
+            if(browser && browser.isConnected)
+                browser.disconnect();
         }
     })
 }
-autoLogin().then(console.log).catch(console.error);
+autoLogin().then(console.log).catch(e => {
+    console.error(e);
+    open('ErrorResult .png');
+});
